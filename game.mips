@@ -1,0 +1,954 @@
+.data # global vars (in RAM)
+display_addr: .word 0x10008000 # MARS: choose 8x8 px unit + 256x256 px display = 1024-unit display (32x32). locations are 0−1023
+hex_black: .word 0x000000
+hex_white: .word 0xffffff
+hex_red: .word 0xff0000
+hex_green: .word 0x00ff00
+hex_cyan: .word 0x00fffff
+hex_pink: .word 0xffc0cb
+hex_yellow: .word 0xffff00
+cycles: .word 0
+blaster_location: .word 1008 # location of the blaster on the display
+cent_seg_locations: .word 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 # location of each cent seg on the display
+cent_size: .word 10 # number of segs that the cent currently has
+cent_seg_directions: .word 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 # -1=left, 1=right, 32=down
+cent_hit_count: .word 0
+shroom_locations: .space 3968 # allocate 3968 (992*4) consecutive bytes of memory for 992 (1024-32) possible active shroom instances (at locations 0−991). (1 int = 1 word = 4 bytes)
+active_shroom_count: .word 0
+projectile_location: .word 0 # location of the projectile on the display
+projectile_active: .word 0 # flag indicating if the projectile is active or not. 0 = inactive
+bug_location: .word 0 # location of the bug on the display
+bug_active: .word 0 # flag indicating if the bug is active or not. 0 = inactive
+
+.text # instructions
+
+reset_screen:
+	jal fill_screen_black # store the address of the instruction after this line into $ra and jump to fill_screen_black label
+
+	lw $t0, display_addr # $t0 = memory address of the display
+	la $t1, blaster_location # $t1 = memory address of the blaster's current location
+	lw $t2, 0($t1) # $t2 = the word at $t1+0 = the value of the blaster's current location
+	sll $s7, $t2, 2 # $s7 = $t2 * 4 = the memory address offset of the blaster's current location relative to the start of display_addr
+	add $t3, $t0, $s7 # $t3 = memory address of the blaster's current location
+	lw $s7, hex_cyan # $s7 = hex_cyan
+	sw $s7, 0($t3) # the word at $t3+0 = $s7. paint the blaster's current location cyan
+
+init_shrooms: # initialize 10 random shroom locations before the game starts
+	addi $t0, $zero, 10 # $t0 = loop counter i = 10
+init_shrooms_loop:
+	jal add_shroom # store the address of the instruction after this line into $ra and jump to add_shroom label
+
+	addi $t0, $t0, -1 # loop counter i -= 1
+	bne $t0, $zero, init_shrooms_loop # if i != 0, go to init_shrooms_loop label
+
+central_processing_loop:
+	jal check_kb_input # store the address of the instruction after this line into $ra and jump to check_kb_input label
+	jal update_cent # store the address of the instruction after this line into $ra and jump to update_cent label
+	jal update_shrooms # store the address of the instruction after this line into $ra and jump to update_shrooms label
+	jal update_projectile # store the address of the instruction after this line into $ra and jump to update_projectile label
+	jal update_bug # store the address of the instruction after this line into $ra and jump to update_bug label
+	jal sleep # store the address of the instruction after this line into $ra and jump to sleep label
+	jal increment_cycle # store the address of the instruction after this line into $ra and jump to increment_cycle label
+	j central_processing_loop
+
+sleep:
+	addi $sp, $sp, -72 # increase stack size by 18 words
+	sw $ra, 68($sp) # save $ra onto stack
+	# save all t and s registers onto stack, except $s7
+	sw $t0, 64($sp)
+	sw $t1, 60($sp)
+	sw $t2, 56($sp)
+	sw $t3, 52($sp)
+	sw $t4, 48($sp)
+	sw $t5, 44($sp)
+	sw $t6, 40($sp)
+	sw $t7, 36($sp)
+	sw $t8, 32($sp)
+	sw $t9, 28($sp)
+	sw $s0, 24($sp)
+	sw $s1, 20($sp)
+	sw $s2, 16($sp)
+	sw $s3, 12($sp)
+	sw $s4, 8($sp)
+	sw $s5, 4($sp)
+	sw $s6, 0($sp)
+
+	li $v0, 32 # load sleep service
+	li $a0, 50 # load time to sleep in ms
+	syscall # invoke syscall
+
+	# restore all t and s registers from stack, except $s7
+	lw $s6, 0($sp)
+	lw $s5, 4($sp)
+	lw $s4, 8($sp)
+	lw $s3, 12($sp)
+	lw $s2, 16($sp)
+	lw $s1, 20($sp)
+	lw $s0, 24($sp)
+	lw $t9, 28($sp)
+	lw $t8, 32($sp)
+	lw $t7, 36($sp)
+	lw $t6, 40($sp)
+	lw $t5, 44($sp)
+	lw $t4, 48($sp)
+	lw $t3, 52($sp)
+	lw $t2, 56($sp)
+	lw $t1, 60($sp)
+	lw $t0, 64($sp)
+	lw $ra, 68($sp) # restore $ra from stack
+	addi $sp, $sp, 72 # decrease stack size by 18 words
+	jr $ra # return to $ra
+
+increment_cycle:
+	addi $sp, $sp, -72 # increase stack size by 18 words
+	sw $ra, 68($sp) # save $ra onto stack
+	# save all t and s registers onto stack, except $s7
+	sw $t0, 64($sp)
+	sw $t1, 60($sp)
+	sw $t2, 56($sp)
+	sw $t3, 52($sp)
+	sw $t4, 48($sp)
+	sw $t5, 44($sp)
+	sw $t6, 40($sp)
+	sw $t7, 36($sp)
+	sw $t8, 32($sp)
+	sw $t9, 28($sp)
+	sw $s0, 24($sp)
+	sw $s1, 20($sp)
+	sw $s2, 16($sp)
+	sw $s3, 12($sp)
+	sw $s4, 8($sp)
+	sw $s5, 4($sp)
+	sw $s6, 0($sp)
+
+	la $t0, cycles # $t0 = memory address of int cycles
+	lw $t1, 0($t0) # $t1 = the word at $t0+0 = the value of current (pre-increment) cycles
+	addi $t1, $t1, 1 # $t1 += 1. increment cycle by 1
+	sw $t1, 0($t0) # the word at $t0+0 = $t1. save the new cycle count to memory
+
+	# restore all t and s registers from stack, except $s7
+	lw $s6, 0($sp)
+	lw $s5, 4($sp)
+	lw $s4, 8($sp)
+	lw $s3, 12($sp)
+	lw $s2, 16($sp)
+	lw $s1, 20($sp)
+	lw $s0, 24($sp)
+	lw $t9, 28($sp)
+	lw $t8, 32($sp)
+	lw $t7, 36($sp)
+	lw $t6, 40($sp)
+	lw $t5, 44($sp)
+	lw $t4, 48($sp)
+	lw $t3, 52($sp)
+	lw $t2, 56($sp)
+	lw $t1, 60($sp)
+	lw $t0, 64($sp)
+	lw $ra, 68($sp) # restore $ra from stack
+	addi $sp, $sp, 72 # decrease stack size by 18 words
+	jr $ra # return to $ra
+
+check_kb_input: # detect any kb input
+	addi $sp, $sp, -72 # increase stack size by 18 words
+	sw $ra, 68($sp) # save $ra onto stack
+	# save all t and s registers onto stack, except $s7
+	sw $t0, 64($sp)
+	sw $t1, 60($sp)
+	sw $t2, 56($sp)
+	sw $t3, 52($sp)
+	sw $t4, 48($sp)
+	sw $t5, 44($sp)
+	sw $t6, 40($sp)
+	sw $t7, 36($sp)
+	sw $t8, 32($sp)
+	sw $t9, 28($sp)
+	sw $s0, 24($sp)
+	sw $s1, 20($sp)
+	sw $s2, 16($sp)
+	sw $s3, 12($sp)
+	sw $s4, 8($sp)
+	sw $s5, 4($sp)
+	sw $s6, 0($sp)
+	
+	lw $s7, 0xffff0000 # check keypress
+	beq $s7, 1, get_kb_input # if $s7 == 1 (keypress detected), branch to get_kb_input
+	
+	# restore all t and s registers from stack, except $s7
+	lw $s6, 0($sp)
+	lw $s5, 4($sp)
+	lw $s4, 8($sp)
+	lw $s3, 12($sp)
+	lw $s2, 16($sp)
+	lw $s1, 20($sp)
+	lw $s0, 24($sp)
+	lw $t9, 28($sp)
+	lw $t8, 32($sp)
+	lw $t7, 36($sp)
+	lw $t6, 40($sp)
+	lw $t5, 44($sp)
+	lw $t4, 48($sp)
+	lw $t3, 52($sp)
+	lw $t2, 56($sp)
+	lw $t1, 60($sp)
+	lw $t0, 64($sp)
+	lw $ra, 68($sp) # restore $ra from stack
+	addi $sp, $sp, 72 # decrease stack size by 18 words
+	jr $ra # return to $ra
+get_kb_input: # get the input key
+	lw $s7, 0xffff0004 # load ASCII value of input key into $s7
+	beq $s7, 0x6A, blaster_left_movement # if input is j, go to blaster_left_movement label
+	beq $s7, 0x6B, blaster_right_movement # if input is k, go to blaster_right_movement label
+	beq $s7, 0x78, shoot_projectile # if input is x, go to shoot_projectile label
+	beq $s7, 0x73, restart_game # if input is s, go to restart_game label
+	
+	# restore all t and s registers from stack, except $s7
+	lw $s6, 0($sp)
+	lw $s5, 4($sp)
+	lw $s4, 8($sp)
+	lw $s3, 12($sp)
+	lw $s2, 16($sp)
+	lw $s1, 20($sp)
+	lw $s0, 24($sp)
+	lw $t9, 28($sp)
+	lw $t8, 32($sp)
+	lw $t7, 36($sp)
+	lw $t6, 40($sp)
+	lw $t5, 44($sp)
+	lw $t4, 48($sp)
+	lw $t3, 52($sp)
+	lw $t2, 56($sp)
+	lw $t1, 60($sp)
+	lw $t0, 64($sp)
+	lw $ra, 68($sp) # restore $ra from stack
+	addi $sp, $sp, 72 # decrease stack size by 18 words
+	jr $ra # return to $ra
+
+blaster_left_movement:
+	lw $t0, display_addr # $t0 = memory address of the display
+	la $t1, blaster_location # $t1 = memory address of the blaster's current (pre-movement) location
+	lw $t2, 0($t1) # $t2 = the word at $t1+0 = the value of the blaster's current (pre-movement) location
+	sll $s7, $t2, 2 # $s7 = $t2 * 4 = the memory address offset of the blaster's current (pre-movement) location relative to the start of display_addr
+	add $t3, $t0, $s7 # $t3 = memory address of the blaster's current (pre-movement) location
+
+	lw $s7, hex_black # $s7 = hex_black
+	sw $s7, 0($t3) # the word at $t3+0 = $s7. paint the blaster's current (pre-movement) location black
+	
+	beq $t2, 992, post_blaster_left_movement # if blaster is at left wall, skip movement
+	addi $t2, $t2, -1 # move the blaster one location left
+post_blaster_left_movement:
+	sw $t2, 0($t1) # the word at $t1+0 = $t2. save the blaster's new location to memory
+	sll $s7, $t2, 2 # $s7 = $t2 * 4 = the memory address offset of the blaster's new location relative to the start of display_addr
+	add $t3, $t0, $s7 # $t3 = memory address of the blaster's new location
+
+	lw $s7, hex_cyan # $s7 = hex_cyan
+	sw $s7, 0($t3) # the word at $t3+0 = $s7. paint the blaster's new location cyan
+	
+	# restore all t and s registers from stack, except $s7
+	lw $s6, 0($sp)
+	lw $s5, 4($sp)
+	lw $s4, 8($sp)
+	lw $s3, 12($sp)
+	lw $s2, 16($sp)
+	lw $s1, 20($sp)
+	lw $s0, 24($sp)
+	lw $t9, 28($sp)
+	lw $t8, 32($sp)
+	lw $t7, 36($sp)
+	lw $t6, 40($sp)
+	lw $t5, 44($sp)
+	lw $t4, 48($sp)
+	lw $t3, 52($sp)
+	lw $t2, 56($sp)
+	lw $t1, 60($sp)
+	lw $t0, 64($sp)
+	lw $ra, 68($sp) # restore $ra from stack
+	addi $sp, $sp, 72 # decrease stack size by 18 words
+	jr $ra # return to $ra
+
+blaster_right_movement:
+	lw $t0, display_addr # $t0 = memory address of the display
+	la $t1, blaster_location # $t1 = memory address of the blaster's current (pre-movement) location
+	lw $t2, 0($t1) # $t2 = the word at $t1+0 = the value of the blaster's current (pre-movement) location
+	sll $s7, $t2, 2 # $s7 = $t2 * 4 = the memory address offset of the blaster's current (pre-movement) location relative to the start of display_addr
+	add $t3, $t0, $s7 # $t3 = memory address of the blaster's current (pre-movement) location
+
+	lw $s7, hex_black # $s7 = hex_black
+	sw $s7, 0($t3) # the word at $t3+0 = $s7. paint the blaster's current (pre-movement) location black
+	
+	beq $t2, 1023, post_blaster_right_movement # if blaster is at right wall, skip movement
+	addi $t2, $t2, 1 # move the blaster one location right
+post_blaster_right_movement:
+	sw $t2, 0($t1) # the word at $t1+0 = $t2. save the blaster's new location to memory
+	sll $s7, $t2, 2 # $s7 = $t2 * 4 = the memory address offset of the blaster's new location relative to the start of display_addr
+	add $t3, $t0, $s7 # $t3 = memory address of the blaster's new location
+	
+	lw $s7, hex_cyan # $s7 = hex_cyan
+	sw $s7, 0($t3) # the word at $t3+0 = $s7. paint the blaster's new location cyan
+	
+	# restore all t and s registers from stack, except $s7
+	lw $s6, 0($sp)
+	lw $s5, 4($sp)
+	lw $s4, 8($sp)
+	lw $s3, 12($sp)
+	lw $s2, 16($sp)
+	lw $s1, 20($sp)
+	lw $s0, 24($sp)
+	lw $t9, 28($sp)
+	lw $t8, 32($sp)
+	lw $t7, 36($sp)
+	lw $t6, 40($sp)
+	lw $t5, 44($sp)
+	lw $t4, 48($sp)
+	lw $t3, 52($sp)
+	lw $t2, 56($sp)
+	lw $t1, 60($sp)
+	lw $t0, 64($sp)
+	lw $ra, 68($sp) # restore $ra from stack
+	addi $sp, $sp, 72 # decrease stack size by 18 words
+	jr $ra # return to $ra
+
+update_cent:
+	addi $sp, $sp, -72 # increase stack size by 18 words
+	sw $ra, 68($sp) # save $ra onto stack
+	# save all t and s registers onto stack, except $s7
+	sw $t0, 64($sp)
+	sw $t1, 60($sp)
+	sw $t2, 56($sp)
+	sw $t3, 52($sp)
+	sw $t4, 48($sp)
+	sw $t5, 44($sp)
+	sw $t6, 40($sp)
+	sw $t7, 36($sp)
+	sw $t8, 32($sp)
+	sw $t9, 28($sp)
+	sw $s0, 24($sp)
+	sw $s1, 20($sp)
+	sw $s2, 16($sp)
+	sw $s3, 12($sp)
+	sw $s4, 8($sp)
+	sw $s5, 4($sp)
+	sw $s6, 0($sp)
+	
+	lw $t0, display_addr # $t0 = memory address of the display
+	la $t1, cent_seg_locations # $t1 = memory address of array cent_seg_locations
+	la $t2, cent_seg_directions # $t2 = memory address of array cent_seg_directions
+
+	addi $t3, $zero, 10 # $t3 = loop counter i = 10
+cent_loop: # iterate through the arrays cent_seg_locations and cent_seg_directions and update each cent seg
+	lw $t4, 0($t1) # $t4 = the word at $t1+0 = the value of the current seg's location (from array cent_seg_locations)
+	lw $t5, 0($t2) # $t5 = the word at $t2+0 = the value of the current seg's direction (from array cent_seg_directions)
+	
+	sll $s7, $t4, 2 # $s7 = $t4 * 4 = the memory address offset of the current seg's location relative to the start of display_addr
+	add $t6, $t0, $s7 # $t6 = memory address of the current seg's location
+
+	addi $s7, $zero, 10 # $s7 = 10
+	bne $t3, $s7, return_from_remove_prev_tail_seg # if not first loop iteration (current seg is not tail seg), skip removing prev tail seg
+	addi $s7, $zero, 1 # $s7 = 1 = right
+	beq $t5, $s7, remove_prev_tail_seg_from_left # if current tail seg's direction is right, remove prev tail seg from the left
+	addi $s7, $zero, -1 # $s7 = -1 = left
+	beq $t5, $s7, remove_prev_tail_seg_from_right # if current tail seg's direction is left, remove prev tail seg from the right
+	addi $s7, $zero, 32 # $s7 = 32 = down
+	beq $t5, $s7, remove_prev_tail_seg_from_above # if current tail seg's direction is down, remove prev tail seg from above
+remove_prev_tail_seg_from_left:
+	lw $s7, hex_black # $s7 = hex_black
+	sw $s7, -4($t6) # the word at $t6-4 = $s7. paint prev tail seg (from left) black
+
+	j return_from_remove_prev_tail_seg
+remove_prev_tail_seg_from_right:
+	lw $s7, hex_black # $s7 = hex_black
+	sw $s7, 4($t6) # the word at $t6+4 = $s7. paint prev tail seg (from right) black
+
+	j return_from_remove_prev_tail_seg
+remove_prev_tail_seg_from_above:
+	lw $s7, hex_black # $s7 = hex_black
+	sw $s7, -128($t6) # the word at $t6-128 = $s7. paint prev tail seg (from above) black
+return_from_remove_prev_tail_seg:
+	addi $s7, $zero, 1 # $s7 = 1
+	bgt, $t3, $s7, paint_body_or_tail # if not last loop iteration (current seg is not head seg), go to paint_body_or_tail label
+	beq, $t3, $s7, paint_head # if last loop iteration (current seg is head seg), go to paint_head label
+paint_body_or_tail:
+	lw $s7, hex_pink # $s7 = hex_pink
+	sw $s7, 0($t6) # the word at $t6+0 = $s7. paint the current seg pink
+
+	j return_from_paint
+paint_head:
+	lw $s7, hex_red # $s7 = hex_red
+	sw $s7, 0($t6) # the word at $t6+0 = $s7. paint the current seg red
+return_from_paint:
+	beq $t4, $zero, return_from_dir_change # skip change direction if current seg's location is 0
+
+	addi $s7, $zero, 1 # $s7 = 1
+	add $s7, $t4, $s7 # $s7 = current seg's location + 1
+	rem $s7, $s7, 32 # $s7 = $s7 % 32
+	beq $s7, $zero, at_right_wall # if current seg is at right wall, go to at_right_wall label
+
+	rem $s7, $t4, 32 # $s7 = $t4 % 32
+	beq $s7, $zero, at_left_wall # if current seg is at left wall, go to at_left_wall label
+
+	j return_from_dir_change
+at_right_wall:
+	addi $s7, $zero, 32 # $s7 = 32 = down
+	beq $t5, $s7, change_dir_left # if current seg's direction is already down, go to change_dir_left label
+	
+	add $t5, $zero, $s7 # $t5 = $s7 = 32. change current seg's direction to down
+	sw $t5, 0($t2) # the word at $t2+0 = $t5. save the current seg's new direction to memory
+
+	j return_from_dir_change
+at_left_wall:
+	addi $s7, $zero, 32 # $s7 = 32 = down
+	beq $t5, $s7, change_dir_right # if current seg's direction is already down, go to change_dir_right label
+
+	add $t5, $zero, $s7 # $t5 = $s7 = 32. change current seg's direction to down
+	sw $t5, 0($t2) # the word at $t2+0 = $t5. save the current seg's new direction to memory
+
+	j return_from_dir_change
+change_dir_left:
+	addi $t5, $zero, -1 # t5 = -1. change current seg's direction to left
+	sw $t5, 0($t2) # the word at $t2+0 = $t5. save the current seg's new direction to memory
+
+	j return_from_dir_change
+change_dir_right:
+	addi $t5, $zero, 1 # t5 = 1. change current seg's direction to right
+	sw $t5, 0($t2) # the word at $t2+0 = $t5. save the current seg's new direction to memory
+return_from_dir_change:
+	add $t4, $t4, $t5 # $t4 += $t5. move current seg one location left/right/down
+	sw $t4, 0($t1) # the word at $t1+0 = $t4. save the current seg's new location to memory
+
+	la $s7, blaster_location # $s7 = memory address of the blaster's current location
+	lw $s7, 0($s7) # $s7 = the word at $s7+0 = the value of the blaster's current location
+	beq $t4, $s7, game_over # if current seg collided with blaster, go to game_over label
+
+	la $t7, projectile_active # $t7 = memory address of the flag projectile_active
+	lw $s7, 0($t7) # $s7 = the word at $t7+0 = the value of the flag projectile_active
+	beq $s7, $zero, post_hit_cent # if projectile is not active, go to post_hit_cent label
+
+	la $t8, projectile_location # $t8 = memory address of the projectile's current location
+	lw $t9, 0($t8) # $t9 = the word at $t8+0 = the value of the projectile's current location
+	la $s0, cent_hit_count # $s0 = memory address of int cent_hit_count
+	lw $s1, 0($s0) # $s1 = the word at $s0+0 = the value of cent_hit_count
+
+	# if projectile collided with current seg, go to hit_cent label
+	beq $t9, $t4, hit_cent
+	addi $s7, $t9, 32 # $s7 = the value of the projectile's current location + 1 unit down
+	beq $s7, $t4, hit_cent
+	j post_hit_cent
+hit_cent:
+	addi $s1, $s1, 1 # $s1 += 1. increment cent_hit_count by 1
+	sw $s1, 0($s0) # the word at $s0+0 = $s1. save the new cent_hit_count to memory
+
+	sw $zero, 0($t7) # the word at $t7+0 = 0. reset projectile_active to 0 in memory
+	sll $s7, $t9, 2 # $s7 = $t9 * 4 = the memory address offset of the projectile's current location relative to the start of display_addr
+	add $s2, $t0, $s7 # $s2 = memory address of the projectile's current location
+	lw $s7, hex_black # $s7 = hex_black
+	sw $s7, 0($s2) # the word at $s2+0 = $s7. paint the projectile's current location black
+
+	beq $s1, 3, restart_game # if cent has been hit 3 times, go to restart_game label
+post_hit_cent:
+	addi $t1, $t1, 4 # $t1 += 4 bytes (1 word). $t1 now points to the next seg's location in array cent_seg_locations
+	addi $t2, $t2, 4 # $t2 += 4 bytes (1 word). $t2 now points to the next seg's direction in array cent_seg_directions
+	addi $t3, $t3, -1 # loop counter i -= 1
+	bne $t3, $zero, cent_loop # if i != 0, go to cent_loop label
+	
+	# restore all t and s registers from stack, except $s7
+	lw $s6, 0($sp)
+	lw $s5, 4($sp)
+	lw $s4, 8($sp)
+	lw $s3, 12($sp)
+	lw $s2, 16($sp)
+	lw $s1, 20($sp)
+	lw $s0, 24($sp)
+	lw $t9, 28($sp)
+	lw $t8, 32($sp)
+	lw $t7, 36($sp)
+	lw $t6, 40($sp)
+	lw $t5, 44($sp)
+	lw $t4, 48($sp)
+	lw $t3, 52($sp)
+	lw $t2, 56($sp)
+	lw $t1, 60($sp)
+	lw $t0, 64($sp)
+	lw $ra, 68($sp) # restore $ra from stack
+	addi $sp, $sp, 72 # decrease stack size by 18 words
+	jr $ra # return to $ra
+
+add_shroom:
+	addi $sp, $sp, -72 # increase stack size by 18 words
+	sw $ra, 68($sp) # save $ra onto stack
+	# save all t and s registers onto stack, except $s7
+	sw $t0, 64($sp)
+	sw $t1, 60($sp)
+	sw $t2, 56($sp)
+	sw $t3, 52($sp)
+	sw $t4, 48($sp)
+	sw $t5, 44($sp)
+	sw $t6, 40($sp)
+	sw $t7, 36($sp)
+	sw $t8, 32($sp)
+	sw $t9, 28($sp)
+	sw $s0, 24($sp)
+	sw $s1, 20($sp)
+	sw $s2, 16($sp)
+	sw $s3, 12($sp)
+	sw $s4, 8($sp)
+	sw $s5, 4($sp)
+	sw $s6, 0($sp)
+
+	la $t0, active_shroom_count # $t0 = memory address of int active_shroom_count
+	lw $t1, 0($t0) # $t1 = the word at $t0+0 = the value of current (pre-add) active_shroom_count = the index of the new shroom's location in array shroom_locations (because when active_shroom_count is 1, the newest shroom's location is stored at shroom_locations[0]. when active_shroom_count is 2, the newest shroom's location is stored at shroom_locations[1]. etc...)
+	
+	la $t2, shroom_locations # $t2 = memory address of array shroom_locations
+	sll $s7, $t1, 2 # $s7 = $t1 * 4 = the memory address offset of the new shroom's location relative to the start of shroom_locations memory address
+	add $t3, $t2, $s7 # $t3 = $t2 + $s7 = memory address of the new shroom's location
+
+	li $v0, 42 # load rng range service (produces random non-negative value)
+	li $a0, 0 # $a0 = 0 = ID of generator
+	li $a1, 991 # $a1 = 991 = upper bound of rng range
+	syscall # invoke syscall. stores rng value in $a0
+	add $s7, $zero, $a0 # $s7 = $a0 = rng value = the new shroom's location
+
+	sw $s7, 0($t3) # the word at $t3+0 = $s7. save the new shroom's location to memory
+
+	addi $t1, $t1, 1 # $t1 += 1. increment amount of active shrooms by 1
+	sw $t1, 0($t0) # the word at $t0+0 = $t1. save the new amount of active shrooms to memory
+
+	# restore all t and s registers from stack, except $s7
+	lw $s6, 0($sp)
+	lw $s5, 4($sp)
+	lw $s4, 8($sp)
+	lw $s3, 12($sp)
+	lw $s2, 16($sp)
+	lw $s1, 20($sp)
+	lw $s0, 24($sp)
+	lw $t9, 28($sp)
+	lw $t8, 32($sp)
+	lw $t7, 36($sp)
+	lw $t6, 40($sp)
+	lw $t5, 44($sp)
+	lw $t4, 48($sp)
+	lw $t3, 52($sp)
+	lw $t2, 56($sp)
+	lw $t1, 60($sp)
+	lw $t0, 64($sp)
+	lw $ra, 68($sp) # restore $ra from stack
+	addi $sp, $sp, 72 # decrease stack size by 18 words
+	jr $ra # return to $ra
+
+update_shrooms:
+	addi $sp, $sp, -72 # increase stack size by 18 words
+	sw $ra, 68($sp) # save $ra onto stack
+	# save all t and s registers onto stack, except $s7
+	sw $t0, 64($sp)
+	sw $t1, 60($sp)
+	sw $t2, 56($sp)
+	sw $t3, 52($sp)
+	sw $t4, 48($sp)
+	sw $t5, 44($sp)
+	sw $t6, 40($sp)
+	sw $t7, 36($sp)
+	sw $t8, 32($sp)
+	sw $t9, 28($sp)
+	sw $s0, 24($sp)
+	sw $s1, 20($sp)
+	sw $s2, 16($sp)
+	sw $s3, 12($sp)
+	sw $s4, 8($sp)
+	sw $s5, 4($sp)
+	sw $s6, 0($sp)
+
+	lw $t0, display_addr # $t0 = memory address of the display
+	la $t1, shroom_locations # $t1 = memory address of array shroom_locations
+
+	la $t2, active_shroom_count # $t2 = memory address of int active_shroom_count
+	lw $t3, 0($t2) # $t3 = the word at $t2+0 = the value of active_shroom_count = loop counter i
+shrooms_loop: # iterate through the array shroom_locations and draw each shroom
+	lw $t4, 0($t1) # $t4 = the word at $t1+0 = the value of the current shroom's location (from array shroom_locations)
+	sll $s7, $t4, 2 # $s7 = $t4 * 4 = the memory address offset of the current shroom's location relative to the start of display_addr
+	add $t5, $t0, $s7 # $t5 = memory address of the current shroom's location
+
+	lw $s7, hex_green # $s7 = hex_green
+	sw $s7, 0($t5) # paint current shroom green
+	
+	addi $t1, $t1, 4 # $t1 += 4 bytes (1 word). $t1 now points to the next shroom's location in array shroom_locations
+	addi $t3, $t3, -1 # loop counter i -= 1
+	bne $t3, $zero, shrooms_loop # if i != 0, go to shrooms_loop label
+auto_shroom:
+	la $s7, cycles # $s7 = memory address of int cycles
+	lw $s7, 0($s7) # $s7 = the word at $s7+0 = the value of cycles
+	rem $s7, $s7, 75 # $s7 = $s7 % 75 (number of cycles to auto add a new shroom)
+	bne $s7, $zero, post_auto_shroom # if it hasnt been long enough to auto add a new shroom, go to post_auto_shroom label
+	jal add_shroom # store the address of the instruction after this line into $ra and jump to add_shroom label
+post_auto_shroom:
+	# restore all t and s registers from stack, except $s7
+	lw $s6, 0($sp)
+	lw $s5, 4($sp)
+	lw $s4, 8($sp)
+	lw $s3, 12($sp)
+	lw $s2, 16($sp)
+	lw $s1, 20($sp)
+	lw $s0, 24($sp)
+	lw $t9, 28($sp)
+	lw $t8, 32($sp)
+	lw $t7, 36($sp)
+	lw $t6, 40($sp)
+	lw $t5, 44($sp)
+	lw $t4, 48($sp)
+	lw $t3, 52($sp)
+	lw $t2, 56($sp)
+	lw $t1, 60($sp)
+	lw $t0, 64($sp)
+	lw $ra, 68($sp) # restore $ra from stack
+	addi $sp, $sp, 72 # decrease stack size by 18 words
+	jr $ra # return to $ra
+
+shoot_projectile:
+	la $t0, projectile_active # $t0 = memory address of the flag projectile_active
+	lw $t1, 0($t0) # $t1 = the word at $t0+0 = the value of the flag projectile_active
+	bne $t1, $zero, skip_shoot # if projectile is already active, go to skip_shoot label
+
+	la $t2, projectile_location # $t2 = memory address of the projectile's current location
+	la $t3, blaster_location # $t3 = memory address of the blaster's current location
+	lw $t4, 0($t3) # $t4 = the word at $t3+0 = the value of the blaster's current location = the new projectile's location (bc update_projectiles will push it up by 1 unit in the same cycle)
+	sw $t4, 0($t2) # the word at $t2+0 = $t4. save the new projectile's location to memory
+
+	addi $s7, $zero, 1 # $s7 = 1
+	sw $s7, 0($t0) # the word at $t0+0 = $s7 = 1. set the flag projectile_active to 1 (active) in memory
+skip_shoot:
+	# restore all t and s registers from stack, except $s7
+	lw $s6, 0($sp)
+	lw $s5, 4($sp)
+	lw $s4, 8($sp)
+	lw $s3, 12($sp)
+	lw $s2, 16($sp)
+	lw $s1, 20($sp)
+	lw $s0, 24($sp)
+	lw $t9, 28($sp)
+	lw $t8, 32($sp)
+	lw $t7, 36($sp)
+	lw $t6, 40($sp)
+	lw $t5, 44($sp)
+	lw $t4, 48($sp)
+	lw $t3, 52($sp)
+	lw $t2, 56($sp)
+	lw $t1, 60($sp)
+	lw $t0, 64($sp)
+	lw $ra, 68($sp) # restore $ra from stack
+	addi $sp, $sp, 72 # decrease stack size by 18 words
+	jr $ra # return to $ra
+
+update_projectile:
+	addi $sp, $sp, -72 # increase stack size by 18 words
+	sw $ra, 68($sp) # save $ra onto stack
+	# save all t and s registers onto stack, except $s7
+	sw $t0, 64($sp)
+	sw $t1, 60($sp)
+	sw $t2, 56($sp)
+	sw $t3, 52($sp)
+	sw $t4, 48($sp)
+	sw $t5, 44($sp)
+	sw $t6, 40($sp)
+	sw $t7, 36($sp)
+	sw $t8, 32($sp)
+	sw $t9, 28($sp)
+	sw $s0, 24($sp)
+	sw $s1, 20($sp)
+	sw $s2, 16($sp)
+	sw $s3, 12($sp)
+	sw $s4, 8($sp)
+	sw $s5, 4($sp)
+	sw $s6, 0($sp)
+
+	la $t0, projectile_active # $t0 = memory address of the flag projectile_active
+	lw $t1, 0($t0) # $t1 = the word at $t0+0 = the value of the flag projectile_active
+	beq $t1, $zero, post_update_projectile # if projectile is inactive, go to post_update_projectile label
+
+	lw $t2, display_addr # $t2 = memory address of the display
+	la $t3, projectile_location # $t3 = memory address of the projectile's current location
+	lw $t4, 0($t3) # $t4 = the word at $t3+0 = the value of the projectile's current location
+	sll $s7, $t4, 2 # $s7 = $t4 * 4 = the memory address offset of the projectile's current location relative to the start of display_addr
+	add $t5, $t2, $s7 # $t5 = memory address of the projectile's current location
+	lw $s7, hex_black # $s7 = hex_black
+	sw $s7, 0($t5) # the word at $t5+0 = $s7. paint the projectile's current location black
+	lw $s7, hex_white # $s7 = hex_white
+	sw $s7, -256($t5) # the word at $t5-256 = $s7. paint the projectile's new location white
+	addi $t6, $t4, -64 # $t6 = the value of the projectile's new location (move up 2 units)
+	sw $t6, 0($t3) # the word at $t3+0 = $t6. save the projectile's new location to memory
+
+	la $t7, blaster_location # $t7 = memory address of the blaster's current location
+	lw $t8, 0($t7) # $t8 = the word at $t7+0 = the value of the blaster's current location
+	sll $s7, $t8, 2 # $s7 = $t8 * 4 = the memory address offset of the blaster's current location relative to the start of display_addr
+	add $t9, $t2, $s7 # $t3 = memory address of the blaster's current location
+	lw $s7, hex_cyan # $s7 = hex_cyan
+	sw $s7, 0($t9) # the word at $t9+0 = $s7. paint the blaster's current location cyan
+
+	bge $t6, $zero, post_update_projectile # if the value of the projectile's new location >= 0, then go to post_update_projectile label
+	sw $zero, 0($t0) # the word at $t0+0 = 0. set the flag projectile_active to 0 (inactive) in memory
+post_update_projectile:
+	# restore all t and s registers from stack, except $s7
+	lw $s6, 0($sp)
+	lw $s5, 4($sp)
+	lw $s4, 8($sp)
+	lw $s3, 12($sp)
+	lw $s2, 16($sp)
+	lw $s1, 20($sp)
+	lw $s0, 24($sp)
+	lw $t9, 28($sp)
+	lw $t8, 32($sp)
+	lw $t7, 36($sp)
+	lw $t6, 40($sp)
+	lw $t5, 44($sp)
+	lw $t4, 48($sp)
+	lw $t3, 52($sp)
+	lw $t2, 56($sp)
+	lw $t1, 60($sp)
+	lw $t0, 64($sp)
+	lw $ra, 68($sp) # restore $ra from stack
+	addi $sp, $sp, 72 # decrease stack size by 18 words
+	jr $ra # return to $ra
+
+update_bug:
+	addi $sp, $sp, -72 # increase stack size by 18 words
+	sw $ra, 68($sp) # save $ra onto stack
+	# save all t and s registers onto stack, except $s7
+	sw $t0, 64($sp)
+	sw $t1, 60($sp)
+	sw $t2, 56($sp)
+	sw $t3, 52($sp)
+	sw $t4, 48($sp)
+	sw $t5, 44($sp)
+	sw $t6, 40($sp)
+	sw $t7, 36($sp)
+	sw $t8, 32($sp)
+	sw $t9, 28($sp)
+	sw $s0, 24($sp)
+	sw $s1, 20($sp)
+	sw $s2, 16($sp)
+	sw $s3, 12($sp)
+	sw $s4, 8($sp)
+	sw $s5, 4($sp)
+	sw $s6, 0($sp)
+
+	la $t0, bug_active # $t0 = memory address of the flag bug_active
+	lw $t1, 0($t0) # $t1 = the word at $t0+0 = the value of the flag bug_active
+	bne $t1, $zero, post_auto_bug # if bug is already active, go to post_auto_bug label
+auto_bug:
+	la $s7, cycles # $s7 = memory address of int cycles
+	lw $s7, 0($s7) # $s7 = the word at $s7+0 = the value of cycles
+	rem $s7, $s7, 75 # $s7 = $s7 % 75 (number of cycles to auto drop a new bug)
+	bne $s7, $zero, post_update_bug # if it hasnt been long enough to drop a new bug, go to post_update_bug label
+
+	la $t3, bug_location # $t3 = memory address of the bug's current location
+	li $v0, 42 # load rng range service (produces random non-negative value)
+	li $a0, 0 # $a0 = 0 = ID of generator
+	li $a1, 31 # $a1 = 31 = upper bound of rng range
+	syscall # invoke syscall. stores rng value in $a0
+	addi $s7, $zero, -96
+	add $s7, $a0, $s7 # $s7 = $a0 - 96 = the new bug's location (will get pushed down 3 units in the same cycle)
+	sw $s7, 0($t3) # the word at $t3+0 = $s7. save the new bug's location to memory
+
+	addi $s7, $zero, 1 # $s7 = 1
+	sw $s7, 0($t0) # the word at $t0+0 = $s7 = 1. set the flag bug_active to 1 (active) in memory
+post_auto_bug:
+	lw $t2, display_addr # $t2 = memory address of the display
+	la $t3, bug_location # $t3 = memory address of the bug's current location
+	lw $t4, 0($t3) # $t4 = the word at $t3+0 = the value of the bug's current location
+	sll $s7, $t4, 2 # $s7 = $t4 * 4 = the memory address offset of the bug's current location relative to the start of display_addr
+	add $t5, $t2, $s7 # $t5 = memory address of the bug's current location
+	lw $s7, hex_black # $s7 = hex_black
+	sw $s7, 0($t5) # the word at $t5+0 = $s7. paint the bug's current location black
+	lw $s7, hex_yellow # $s7 = hex_yellow
+	sw $s7, 384($t5) # the word at $t5+384 = $s7. paint the bug's new location yellow
+	addi $t6, $t4, 96 # $t6 = the value of the bug's new location (move down 3 units)
+	sw $t6, 0($t3) # the word at $t3+0 = $t6. save the bug's new location to memory
+
+	addi $s7, $zero, 1023 # $s7 = 1023
+	ble $t6, $s7, post_update_bug # if the value of the bug's new location <= 1023, then go to post_update_bug label
+	sw $zero, 0($t0) # the word at $t0+0 = 0. set the flag bug_active to 0 (inactive) in memory
+
+	la $t7, blaster_location # $t7 = memory address of the blaster's current location
+	lw $t8, 0($t7) # $t8 = the word at $t7+0 = the value of the blaster's current location
+
+	# if bug collided with blaster, go to game_over label
+	beq $t6, $t8, game_over
+	addi $s7, $t6, -32 # $s7 = the value of the bug's new location + 1 unit up
+	beq $s7, $t8, game_over
+	addi $s7, $t6, -64 # $s7 = the value of the bug's new location + 2 units up
+	beq $s7, $t8, game_over
+post_update_bug:
+	# restore all t and s registers from stack, except $s7
+	lw $s6, 0($sp)
+	lw $s5, 4($sp)
+	lw $s4, 8($sp)
+	lw $s3, 12($sp)
+	lw $s2, 16($sp)
+	lw $s1, 20($sp)
+	lw $s0, 24($sp)
+	lw $t9, 28($sp)
+	lw $t8, 32($sp)
+	lw $t7, 36($sp)
+	lw $t6, 40($sp)
+	lw $t5, 44($sp)
+	lw $t4, 48($sp)
+	lw $t3, 52($sp)
+	lw $t2, 56($sp)
+	lw $t1, 60($sp)
+	lw $t0, 64($sp)
+	lw $ra, 68($sp) # restore $ra from stack
+	addi $sp, $sp, 72 # decrease stack size by 18 words
+	jr $ra # return to $ra
+
+fill_screen_black:
+	addi $sp, $sp, -72 # increase stack size by 18 words
+	sw $ra, 68($sp) # save $ra onto stack
+	# save all t and s registers onto stack, except $s7
+	sw $t0, 64($sp)
+	sw $t1, 60($sp)
+	sw $t2, 56($sp)
+	sw $t3, 52($sp)
+	sw $t4, 48($sp)
+	sw $t5, 44($sp)
+	sw $t6, 40($sp)
+	sw $t7, 36($sp)
+	sw $t8, 32($sp)
+	sw $t9, 28($sp)
+	sw $s0, 24($sp)
+	sw $s1, 20($sp)
+	sw $s2, 16($sp)
+	sw $s3, 12($sp)
+	sw $s4, 8($sp)
+	sw $s5, 4($sp)
+	sw $s6, 0($sp)
+
+	lw $t0, display_addr # $t0 = memory address of the display
+
+	add $t1, $zero, $zero # $t1 = loop counter i = 0
+fill_screen_black_loop:
+	lw $s7, hex_black # $s7 = hex_black
+	sw $s7, 0($t0) # the word at $t0+0 = $s7. paint the current location black
+
+	addi $t0, $t0, 4 # $t0 += 4 bytes (1 word). $t0 now points to the next location on the display
+	addi $t1, $t1, 1 # loop counter i += 1
+	addi $s7, $zero, 1024 # $s7 = 1024
+	bne $t1, $s7, fill_screen_black_loop # if i != 1024, go to fill_screen_black_loop label
+
+	# restore all t and s registers from stack, except $s7
+	lw $s6, 0($sp)
+	lw $s5, 4($sp)
+	lw $s4, 8($sp)
+	lw $s3, 12($sp)
+	lw $s2, 16($sp)
+	lw $s1, 20($sp)
+	lw $s0, 24($sp)
+	lw $t9, 28($sp)
+	lw $t8, 32($sp)
+	lw $t7, 36($sp)
+	lw $t6, 40($sp)
+	lw $t5, 44($sp)
+	lw $t4, 48($sp)
+	lw $t3, 52($sp)
+	lw $t2, 56($sp)
+	lw $t1, 60($sp)
+	lw $t0, 64($sp)
+	lw $ra, 68($sp) # restore $ra from stack
+	addi $sp, $sp, 72 # decrease stack size by 18 words
+	jr $ra # return to $ra
+
+game_over: # game over screen when blaster dies
+	jal fill_screen_black # store the address of the instruction after this line into $ra and jump to fill_screen_black label
+
+	lw $t0, display_addr
+	addi $t0, $t0, 1576
+	lw $s7, hex_white
+
+	# draw "b"
+	sw $s7, 128($t0)
+	sw $s7, 256($t0)
+	sw $s7, 384($t0)
+	sw $s7, 388($t0)
+	sw $s7, 392($t0)
+	sw $s7, 520($t0)
+	sw $s7, 512($t0)
+	sw $s7, 640($t0)
+	sw $s7, 644($t0)
+	sw $s7, 648($t0)
+
+	# draw "y"
+	sw $s7, 400($t0)
+	sw $s7, 528($t0)
+	sw $s7, 656($t0)
+	sw $s7, 408($t0)
+	sw $s7, 536($t0)
+	sw $s7, 660($t0)
+	sw $s7, 664($t0)
+	sw $s7, 792($t0)
+	sw $s7, 920($t0)
+	sw $s7, 916($t0)
+	sw $s7, 912($t0)
+
+	# draw "e"
+	sw $s7, 672($t0)
+	sw $s7, 676($t0)
+	sw $s7, 680($t0)
+	sw $s7, 544($t0)
+	sw $s7, 416($t0)
+	sw $s7, 420($t0)
+	sw $s7, 424($t0)
+	sw $s7, 288($t0)
+	sw $s7, 160($t0)
+	sw $s7, 164($t0)
+	sw $s7, 168($t0)
+
+	# draw "!"
+	sw $s7, 176($t0)
+	sw $s7, 304($t0)
+	sw $s7, 432($t0)
+	sw $s7, 688($t0)
+game_over_wait_input_loop:
+	jal check_kb_input # store the address of the instruction after this line into $ra and jump to check_kb_input label
+	j game_over_wait_input_loop
+
+restart_game: # restart game
+	la $t0, cycles # $t0 = memory address of int cycles
+	sw $zero, 0($t0) # the word at $t0+0 = 0. reset cycles to 0 in memory
+
+	la $t0, blaster_location # $t0 = memory address of int blaster_location
+	addi $s7, $zero, 1008 # $s7 = 1008
+	sw $s7, 0($t0) # the word at $t0+0 = $s7 = 1008. reset blaster_location to 1008 in memory
+
+	la $t0, cent_seg_locations # $t0 = memory address of array cent_seg_locations
+	la $t1, cent_seg_directions # $t1 = memory address of array cent_seg_directions
+	add $t2, $zero, $zero # $t2 = loop counter i = 0
+	addi $t3, $zero, 1 # $t3 = 1
+reset_cent_loop:
+	sw $t2, 0($t0) # the word at $t0+0 = $t2. reset the current seg's location in memory
+	sw $t3, 0($t1) # the word at $t1+0 = $t3. reset the current seg's direction in memory
+
+	addi $t0, $t0, 4 # $t0 += 4 bytes (1 word). $t0 now points to the next seg's location in array cent_seg_locations
+	addi $t1, $t1, 4 # $t1 += 4 bytes (1 word). $t1 now points to the next seg's direction in array cent_seg_directions
+	addi $t2, $t2, 1 # loop counter i += 1
+	addi $s7, $zero, 10 # $s7 = 10
+	bne $t2, $s7, reset_cent_loop # if i != 10, go to reset_cent_loop label
+post_reset_cent:
+	la $t0, cent_hit_count # $t0 = memory address of int cent_hit_count
+	sw $zero, 0($t0) # the word at $t0+0 = 0. reset cent_hit_count to 0 in memory
+
+	la $t0, active_shroom_count # $t0 = memory address of int active_shroom_count
+	sw $zero, 0($t0) # the word at $t0+0 = 0. reset active_shroom_count to 0 in memory
+
+	la $t0, projectile_location # $t0 = memory address of int projectile_location
+	sw $zero, 0($t0) # the word at $t0+0 = 0. reset projectile_location to 0 in memory
+
+	la $t0, projectile_active # $t0 = memory address of int projectile_active
+	sw $zero, 0($t0) # the word at $t0+0 = 0. reset projectile_active to 0 in memory
+
+	la $t0, bug_location # $t0 = memory address of int bug_location
+	sw $zero, 0($t0) # the word at $t0+0 = 0. reset bug_location to 0 in memory
+
+	la $t0, bug_active # $t0 = memory address of int bug_active
+	sw $zero, 0($t0) # the word at $t0+0 = 0. reset bug_active to 0 in memory
+
+	addi $sp, $sp, 44 # clear stack: decrease stack size by 11 words
+	j reset_screen
+
+exit: # program termination
+	li $v0, 10 # load exit service
+	syscall # invoke syscall

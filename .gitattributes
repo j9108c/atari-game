@@ -1,0 +1,2 @@
+*.mips linguist-detectable=true
+*.mips linguist-language=Assembly
